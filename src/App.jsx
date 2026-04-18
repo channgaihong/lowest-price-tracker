@@ -74,7 +74,7 @@ export default function App() {
   const [successMessage, setSuccessMessage] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
 
-  // 1. 初始化登入驗證
+  // 1. 初始化登入驗證 (解決 Canvas 權限不足問題)
   useEffect(() => {
     if (!auth) {
       setLoading(false);
@@ -96,30 +96,38 @@ export default function App() {
     
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
-      setLoading(false); // 確保狀態更新後關閉載入畫面
+      if (!currentUser) setLoading(false);
     });
     return () => unsubscribe();
   }, []);
 
   // 2. 讀取主要比價資料
   useEffect(() => {
-    // ⚠️ 確保已經成功匿名登入取得 user 後再執行資料庫操作，避免權限不足 (403)
-    if (!user || !db) return;
+    const isCanvas = typeof __firebase_config !== 'undefined';
+    if (isCanvas && !user) return; // Canvas 必須等待驗證完成
+    if (!db) {
+      setLoading(false);
+      return;
+    }
     
     const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'lowest_prices');
     const unsubscribe = onSnapshot(colRef, (snapshot) => {
       const fetchedItems = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       fetchedItems.sort((a, b) => b.timestamp - a.timestamp);
       setItems(fetchedItems);
+      setLoading(false);
     }, (error) => {
       console.error("Error fetching data:", error);
+      setLoading(false);
     });
     return () => unsubscribe();
-  }, [user, db]);
+  }, [db, user]);
 
   // 3. 讀取管理員清單 (僅限超級管理員開啟管理介面時)
   useEffect(() => {
-    if (!user || !db || !isAdmin || adminRole !== 'super_admin' || !showAdminManager) return;
+    const isCanvas = typeof __firebase_config !== 'undefined';
+    if (isCanvas && !user) return;
+    if (!db || !isAdmin || adminRole !== 'super_admin' || !showAdminManager) return;
     
     const fetchAdmins = async () => {
       try {
@@ -131,7 +139,7 @@ export default function App() {
       }
     };
     fetchAdmins();
-  }, [user, db, isAdmin, adminRole, showAdminManager]);
+  }, [db, user, isAdmin, adminRole, showAdminManager]);
 
   // 圖片壓縮功能
   const compressImage = (file) => {
@@ -177,8 +185,8 @@ export default function App() {
       return;
     }
 
-    if (!user || !db) {
-       setAdminLoginError('系統尚未準備好或連線失敗，請確認設定。');
+    if (!db) {
+       setAdminLoginError('資料庫尚未連線，請確認設定。');
        return;
     }
 
@@ -245,7 +253,10 @@ export default function App() {
   // --- 超級管理員功能：新增與管理管理員 (加密寫入) ---
   const handleAddAdmin = async (e) => {
     e.preventDefault();
-    if (!newAdminUser || !newAdminPass || !user || !db) return;
+    const isCanvas = typeof __firebase_config !== 'undefined';
+    if (isCanvas && !user) return;
+    if (!newAdminUser || !newAdminPass || !db) return;
+    
     try {
       // 檢查帳號是否重複
       const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'admin_users'), where('username', '==', newAdminUser));
@@ -280,7 +291,10 @@ export default function App() {
   };
 
   const handleDeleteAdmin = async (id) => {
-    if (!user || !db) return;
+    const isCanvas = typeof __firebase_config !== 'undefined';
+    if (isCanvas && !user) return;
+    if (!db) return;
+    
     if (!window.confirm("確定要刪除這個管理員帳號嗎？")) return;
     try {
       await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'admin_users', id));
@@ -293,7 +307,10 @@ export default function App() {
 
   // 超級管理員強制修改其他管理員的密碼
   const handleUpdatePassword = async (id) => {
-    if (!user || !db || !editPassword) return;
+    const isCanvas = typeof __firebase_config !== 'undefined';
+    if (isCanvas && !user) return;
+    if (!db || !editPassword) return;
+    
     try {
       const hashedEditPass = await hashPassword(editPassword);
       await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'admin_users', id), {
@@ -313,7 +330,9 @@ export default function App() {
   // --- 所有管理員功能：修改個人密碼 ---
   const handleUpdateOwnPassword = async (e) => {
     e.preventDefault();
-    if (!user || !db || !personalNewPassword) return;
+    const isCanvas = typeof __firebase_config !== 'undefined';
+    if (isCanvas && !user) return;
+    if (!db || !personalNewPassword) return;
     
     if (adminId === 'root') {
       alert("內建的 Root 帳號為系統預設，無法在此修改密碼。");
@@ -338,7 +357,9 @@ export default function App() {
   // --- 記錄最低價表單送出 ---
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!name || !price || !store || !date || !user || !db || !isAdmin) return;
+    const isCanvas = typeof __firebase_config !== 'undefined';
+    if (isCanvas && !user) return;
+    if (!name || !price || !store || !date || !db || !isAdmin) return;
 
     const numPrice = parseFloat(price);
     const existingItem = items.find(i => i.name.trim().toLowerCase() === name.trim().toLowerCase());
@@ -370,7 +391,10 @@ export default function App() {
   };
 
   const handleDelete = async (id) => {
-    if (!user || !db || !isAdmin) return;
+    const isCanvas = typeof __firebase_config !== 'undefined';
+    if (isCanvas && !user) return;
+    if (!db || !isAdmin) return;
+    
     if (!window.confirm("確定要刪除這筆比價紀錄嗎？")) return;
     try { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'lowest_prices', id)); } 
     catch (error) { console.error("Error deleting document: ", error); }
