@@ -7,7 +7,7 @@ import { Camera, Plus, Store, Tag, Calendar, AlertCircle, Image as ImageIcon, Tr
 // --- Firebase Initialization ---
 let app, auth, db, appId;
 try {
-  // Import the functions you need from the SDKs you need
+// Import the functions you need from the SDKs you need
 import { initializeApp } from "firebase/app";
 // TODO: Add SDKs for Firebase products that you want to use
 // https://firebase.google.com/docs/web/setup#available-libraries
@@ -24,6 +24,9 @@ const firebaseConfig = {
 
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+const db = getFirestore(app);
+    const appId = "lowest-price-d02e6";
 } catch (error) {
   console.error("Firebase initialization error:", error);
 }
