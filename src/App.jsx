@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, query, where, getDocs, addDoc, updateDoc } from 'firebase/firestore';
-import { Camera, Plus, Store, Tag, Calendar, AlertCircle, Image as ImageIcon, Trash2, X, DollarSign, CheckCircle2, Search, Lock, Unlock, Key, Users, UserPlus, Edit, Shield } from 'lucide-react';
+import { Camera, Plus, Store, Tag, Calendar, AlertCircle, Image as ImageIcon, Trash2, X, DollarSign, CheckCircle2, Search, Lock, Unlock, Key, Users, UserPlus, Edit, Shield, Settings } from 'lucide-react';
 
 // --- Firebase Initialization ---
 // TODO: Add SDKs for Firebase products that you want to use
@@ -20,9 +20,17 @@ const firebaseConfig = {
 
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
-    const auth = getAuth(app);
+const auth = getAuth(app);
 const db = getFirestore(app);
-    const appId = "lowest-price-d02e6";
+const appId = "lowest-price-d02e6";
+
+// --- 密碼加密工具 (SHA-256) ---
+const hashPassword = async (password) => {
+  const msgBuffer = new TextEncoder().encode(password);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+};
 
 export default function App() {
   const [user, setUser] = useState(null);
@@ -32,6 +40,7 @@ export default function App() {
   // Admin Authentication State
   const [isAdmin, setIsAdmin] = useState(false);
   const [adminRole, setAdminRole] = useState(null); // 'super_admin' 或是 'admin'
+  const [adminId, setAdminId] = useState(null); // 記錄當前登入管理員的文檔 ID
   const [showAdminLogin, setShowAdminLogin] = useState(false);
   const [adminUsername, setAdminUsername] = useState('');
   const [adminPassword, setAdminPassword] = useState('');
@@ -45,6 +54,10 @@ export default function App() {
   const [newAdminRole, setNewAdminRole] = useState('admin');
   const [editingAdminId, setEditingAdminId] = useState(null);
   const [editPassword, setEditPassword] = useState('');
+
+  // Personal Password Change State (All Admins)
+  const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
+  const [personalNewPassword, setPersonalNewPassword] = useState('');
 
   // Form State
   const [name, setName] = useState('');
@@ -148,15 +161,16 @@ export default function App() {
     }
   };
 
-  // --- 登入邏輯 ---
+  // --- 登入邏輯 (含加密比對) ---
   const handleAdminAuth = async (e) => {
     e.preventDefault();
     setAdminLoginError('');
     
-    // 預設無敵超級帳號 (讓您可以建立第一個資料庫帳號)
+    // 預設無敵超級帳號 (純本地驗證，讓您可以建立第一個資料庫帳號)
     if (adminUsername === 'root' && adminPassword === 'super123') {
       setIsAdmin(true);
       setAdminRole('super_admin');
+      setAdminId('root');
       setShowAdminLogin(false);
       resetLoginStates();
       return;
@@ -167,24 +181,54 @@ export default function App() {
        return;
     }
 
-    // 檢查 Firebase 資料庫內的帳號
     try {
-      const q = query(
+      const hashedInputPassword = await hashPassword(adminPassword);
+
+      // 檢查 Firebase 資料庫內的帳號 (優先以加密密碼查詢)
+      const qHashed = query(
+        collection(db, 'artifacts', appId, 'public', 'data', 'admin_users'), 
+        where('username', '==', adminUsername),
+        where('password', '==', hashedInputPassword)
+      );
+      const snapshotHashed = await getDocs(qHashed);
+      
+      if (!snapshotHashed.empty) {
+        const userData = snapshotHashed.docs[0].data();
+        setIsAdmin(true);
+        setAdminRole(userData.role);
+        setAdminId(snapshotHashed.docs[0].id);
+        setShowAdminLogin(false);
+        resetLoginStates();
+        return;
+      }
+
+      // 如果找不到，為了向後相容舊帳號，試著搜尋「明文密碼」
+      const qPlain = query(
         collection(db, 'artifacts', appId, 'public', 'data', 'admin_users'), 
         where('username', '==', adminUsername),
         where('password', '==', adminPassword)
       );
-      const snapshot = await getDocs(q);
-      
-      if (!snapshot.empty) {
-        const userData = snapshot.docs[0].data();
+      const snapshotPlain = await getDocs(qPlain);
+
+      if (!snapshotPlain.empty) {
+        const userData = snapshotPlain.docs[0].data();
+        const docId = snapshotPlain.docs[0].id;
+        
+        // 自動幫使用者升級為加密密碼
+        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'admin_users', docId), {
+          password: hashedInputPassword
+        });
+
         setIsAdmin(true);
         setAdminRole(userData.role);
+        setAdminId(docId);
         setShowAdminLogin(false);
         resetLoginStates();
-      } else {
-        setAdminLoginError('帳號或密碼錯誤。');
+        return;
       }
+
+      setAdminLoginError('帳號或密碼錯誤。');
+
     } catch (err) {
       console.error("Login check failed", err);
       setAdminLoginError('連線錯誤，請稍後再試。');
@@ -197,7 +241,7 @@ export default function App() {
     setAdminLoginError('');
   };
 
-  // --- 超級管理員功能：新增與管理管理員 ---
+  // --- 超級管理員功能：新增與管理管理員 (加密寫入) ---
   const handleAddAdmin = async (e) => {
     e.preventDefault();
     if (!newAdminUser || !newAdminPass || !db) return;
@@ -206,22 +250,31 @@ export default function App() {
       const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'admin_users'), where('username', '==', newAdminUser));
       const snapshot = await getDocs(q);
       if (!snapshot.empty) {
-        alert("此帳號名稱已存在！");
+        alert("此帳號名稱已存在，請使用其他名稱！");
         return;
       }
+
+      // 將新密碼加密
+      const hashedNewPass = await hashPassword(newAdminPass);
+
       // 寫入新管理員
       await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'admin_users'), {
         username: newAdminUser,
-        password: newAdminPass,
+        password: hashedNewPass,
         role: newAdminRole,
         createdAt: Date.now()
       });
+      
+      alert("✅ 管理員新增成功！"); // 加入明確的成功提示
+
       setNewAdminUser(''); setNewAdminPass(''); setNewAdminRole('admin');
+      
       // 重新讀取清單
       const updatedList = await getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'admin_users'));
       setAdminList(updatedList.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     } catch (err) {
       console.error("Error adding admin", err);
+      alert("新增失敗，請稍後再試：" + err.message);
     }
   };
 
@@ -230,24 +283,53 @@ export default function App() {
     try {
       await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'admin_users', id));
       setAdminList(adminList.filter(admin => admin.id !== id));
+      alert("已成功刪除。");
     } catch (err) {
       console.error("Error deleting admin", err);
     }
   };
 
+  // 超級管理員強制修改其他管理員的密碼
   const handleUpdatePassword = async (id) => {
     if (!editPassword) return;
     try {
+      const hashedEditPass = await hashPassword(editPassword);
       await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'admin_users', id), {
-        password: editPassword
+        password: hashedEditPass
       });
       setEditingAdminId(null);
       setEditPassword('');
-      alert("密碼修改成功！");
-      // 更新本機畫面資料
-      setAdminList(adminList.map(admin => admin.id === id ? { ...admin, password: editPassword } : admin));
+      alert("✅ 密碼修改成功！");
+      // 更新本機畫面資料 (畫面不顯示密碼，所以只需刷新狀態)
+      setAdminList(adminList.map(admin => admin.id === id ? { ...admin, password: hashedEditPass } : admin));
     } catch (err) {
       console.error("Error updating password", err);
+      alert("修改失敗，請稍後再試。");
+    }
+  };
+
+  // --- 所有管理員功能：修改個人密碼 ---
+  const handleUpdateOwnPassword = async (e) => {
+    e.preventDefault();
+    if (!personalNewPassword) return;
+    
+    if (adminId === 'root') {
+      alert("內建的 Root 帳號為系統預設，無法在此修改密碼。");
+      return;
+    }
+
+    try {
+      const hashedPersonalPass = await hashPassword(personalNewPassword);
+      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'admin_users', adminId), {
+        password: hashedPersonalPass
+      });
+      
+      alert("✅ 您的密碼已成功修改！");
+      setShowChangePasswordModal(false);
+      setPersonalNewPassword('');
+    } catch (err) {
+      console.error("Error updating own password", err);
+      alert("修改失敗，請稍後再試。");
     }
   };
 
@@ -307,15 +389,22 @@ export default function App() {
           </div>
           
           <div className="flex items-center gap-3">
-            {/* 只有超級管理員可以看到這個按鈕 */}
+            {/* 只有超級管理員可以看到帳號管理 */}
             {isAdmin && adminRole === 'super_admin' && (
               <button onClick={() => setShowAdminManager(true)} className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 rounded-lg text-sm font-medium transition-colors">
                 <Users className="w-4 h-4" /> 帳號管理
               </button>
             )}
 
+            {/* 所有管理員都能修改自己的密碼 */}
+            {isAdmin && (
+               <button onClick={() => setShowChangePasswordModal(true)} className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 rounded-lg text-sm font-medium transition-colors">
+                 <Settings className="w-4 h-4" /> 修改密碼
+               </button>
+            )}
+
             <button onClick={() => {
-              if(isAdmin) { setIsAdmin(false); setAdminRole(null); }
+              if(isAdmin) { setIsAdmin(false); setAdminRole(null); setAdminId(null); }
               else { setShowAdminLogin(true); }
             }} className="flex items-center gap-2 px-3 py-1.5 bg-emerald-800 hover:bg-emerald-900 rounded-full text-sm font-medium transition-colors">
               {isAdmin ? <><Unlock className="w-4 h-4" /> 登出 ({adminRole === 'super_admin' ? '超級管理員' : '管理員'})</> : <><Lock className="w-4 h-4" /> 管理員登入</>}
@@ -399,8 +488,37 @@ export default function App() {
               </div>
               {adminLoginError && <p className="text-rose-500 text-sm">{adminLoginError}</p>}
               <div className="flex gap-3 mt-4">
-                <button type="button" onClick={() => {setShowAdminLogin(false); resetLoginStates();}} className="flex-1 py-2 bg-gray-100 rounded-xl">取消</button>
-                <button type="submit" className="flex-1 py-2 bg-emerald-600 text-white rounded-xl">登入</button>
+                <button type="button" onClick={() => {setShowAdminLogin(false); resetLoginStates();}} className="flex-1 py-2 bg-gray-100 rounded-xl hover:bg-gray-200">取消</button>
+                <button type="submit" className="flex-1 py-2 bg-emerald-600 text-white rounded-xl hover:bg-emerald-700">登入</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* --- 管理員：修改個人密碼 Modal --- */}
+      {showChangePasswordModal && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl w-full max-w-sm p-6 shadow-2xl">
+            <div className="flex items-center gap-2 justify-center mb-6 text-emerald-600">
+              <Key className="w-6 h-6" />
+              <h3 className="text-xl font-bold">修改個人密碼</h3>
+            </div>
+            <form onSubmit={handleUpdateOwnPassword} className="space-y-4">
+              <div>
+                <label className="text-sm text-gray-600 mb-1 block">請輸入新密碼</label>
+                <input 
+                  type="password" 
+                  required
+                  value={personalNewPassword} 
+                  onChange={(e) => setPersonalNewPassword(e.target.value)} 
+                  className="w-full px-4 py-2 border rounded-xl" 
+                  autoFocus 
+                />
+              </div>
+              <div className="flex gap-3 mt-6">
+                <button type="button" onClick={() => {setShowChangePasswordModal(false); setPersonalNewPassword('');}} className="flex-1 py-2 bg-gray-100 rounded-xl hover:bg-gray-200">取消</button>
+                <button type="submit" className="flex-1 py-2 bg-emerald-600 text-white rounded-xl hover:bg-emerald-700">確認修改</button>
               </div>
             </form>
           </div>
@@ -426,7 +544,7 @@ export default function App() {
                   <option value="admin">一般管理員</option>
                   <option value="super_admin">超級管理員</option>
                 </select>
-                <button type="submit" className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700">新增</button>
+                <button type="submit" className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors">新增</button>
               </form>
             </div>
 
@@ -451,7 +569,7 @@ export default function App() {
                           <button onClick={() => {setEditingAdminId(null); setEditPassword('');}} className="text-xs bg-gray-200 px-2 py-1 rounded">取消</button>
                         </div>
                       ) : (
-                        <button onClick={() => setEditingAdminId(admin.id)} className="p-1.5 text-gray-400 hover:text-emerald-600 bg-gray-100 rounded-md" title="修改密碼">
+                        <button onClick={() => setEditingAdminId(admin.id)} className="p-1.5 text-gray-400 hover:text-emerald-600 bg-gray-100 rounded-md" title="強制修改密碼">
                           <Edit className="w-4 h-4"/>
                         </button>
                       )}
