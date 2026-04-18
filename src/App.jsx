@@ -89,48 +89,49 @@ export default function App() {
         }
       } catch (error) {
         console.error("Authentication failed:", error);
+        setLoading(false);
       }
     };
     initAuth();
     
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
-      if (!currentUser) setLoading(false);
+      setLoading(false); // 確保狀態更新後關閉載入畫面
     });
     return () => unsubscribe();
   }, []);
 
   // 2. 讀取主要比價資料
   useEffect(() => {
+    // ⚠️ 確保已經成功匿名登入取得 user 後再執行資料庫操作，避免權限不足 (403)
     if (!user || !db) return;
+    
     const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'lowest_prices');
     const unsubscribe = onSnapshot(colRef, (snapshot) => {
       const fetchedItems = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       fetchedItems.sort((a, b) => b.timestamp - a.timestamp);
       setItems(fetchedItems);
-      setLoading(false);
     }, (error) => {
       console.error("Error fetching data:", error);
-      setLoading(false);
     });
     return () => unsubscribe();
-  }, [user]);
+  }, [user, db]);
 
   // 3. 讀取管理員清單 (僅限超級管理員開啟管理介面時)
   useEffect(() => {
-    if (isAdmin && adminRole === 'super_admin' && showAdminManager && db) {
-      const fetchAdmins = async () => {
-        try {
-          const adminColRef = collection(db, 'artifacts', appId, 'public', 'data', 'admin_users');
-          const snapshot = await getDocs(adminColRef);
-          setAdminList(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-        } catch (err) {
-          console.error("Error fetching admins", err);
-        }
-      };
-      fetchAdmins();
-    }
-  }, [isAdmin, adminRole, showAdminManager]);
+    if (!user || !db || !isAdmin || adminRole !== 'super_admin' || !showAdminManager) return;
+    
+    const fetchAdmins = async () => {
+      try {
+        const adminColRef = collection(db, 'artifacts', appId, 'public', 'data', 'admin_users');
+        const snapshot = await getDocs(adminColRef);
+        setAdminList(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      } catch (err) {
+        console.error("Error fetching admins", err);
+      }
+    };
+    fetchAdmins();
+  }, [user, db, isAdmin, adminRole, showAdminManager]);
 
   // 圖片壓縮功能
   const compressImage = (file) => {
@@ -176,8 +177,8 @@ export default function App() {
       return;
     }
 
-    if (!db) {
-       setAdminLoginError('資料庫尚未連線，請確認設定。');
+    if (!user || !db) {
+       setAdminLoginError('系統尚未準備好或連線失敗，請確認設定。');
        return;
     }
 
@@ -244,7 +245,7 @@ export default function App() {
   // --- 超級管理員功能：新增與管理管理員 (加密寫入) ---
   const handleAddAdmin = async (e) => {
     e.preventDefault();
-    if (!newAdminUser || !newAdminPass || !db) return;
+    if (!newAdminUser || !newAdminPass || !user || !db) return;
     try {
       // 檢查帳號是否重複
       const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'admin_users'), where('username', '==', newAdminUser));
@@ -279,6 +280,7 @@ export default function App() {
   };
 
   const handleDeleteAdmin = async (id) => {
+    if (!user || !db) return;
     if (!window.confirm("確定要刪除這個管理員帳號嗎？")) return;
     try {
       await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'admin_users', id));
@@ -291,7 +293,7 @@ export default function App() {
 
   // 超級管理員強制修改其他管理員的密碼
   const handleUpdatePassword = async (id) => {
-    if (!editPassword) return;
+    if (!user || !db || !editPassword) return;
     try {
       const hashedEditPass = await hashPassword(editPassword);
       await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'admin_users', id), {
@@ -311,7 +313,7 @@ export default function App() {
   // --- 所有管理員功能：修改個人密碼 ---
   const handleUpdateOwnPassword = async (e) => {
     e.preventDefault();
-    if (!personalNewPassword) return;
+    if (!user || !db || !personalNewPassword) return;
     
     if (adminId === 'root') {
       alert("內建的 Root 帳號為系統預設，無法在此修改密碼。");
