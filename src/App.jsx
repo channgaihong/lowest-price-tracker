@@ -5,10 +5,6 @@ import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc } from 'fi
 import { Camera, Plus, Store, Tag, Calendar, AlertCircle, Image as ImageIcon, Trash2, X, DollarSign, CheckCircle2, Search, Lock, Unlock, Key } from 'lucide-react';
 
 // --- Firebase Initialization ---
-let app, auth, db, appId;
-try {
-// Import the functions you need from the SDKs you need
-import { initializeApp } from "firebase/app";
 // TODO: Add SDKs for Firebase products that you want to use
 // https://firebase.google.com/docs/web/setup#available-libraries
 
@@ -27,9 +23,6 @@ const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
 const db = getFirestore(app);
     const appId = "lowest-price-d02e6";
-} catch (error) {
-  console.error("Firebase initialization error:", error);
-}
 
 export default function App() {
   const [user, setUser] = useState(null);
