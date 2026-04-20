@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, query, where, getDocs, addDoc, updateDoc } from 'firebase/firestore';
-import { Camera, Plus, Store, Tag, Calendar, AlertCircle, Image as ImageIcon, Trash2, X, DollarSign, CheckCircle2, Search, Lock, Unlock, Key, Users, UserPlus, Edit, Shield, Settings, AppWindow, Edit3, ToggleLeft, ToggleRight } from 'lucide-react';
+import { Camera, Plus, Store, Tag, Calendar, AlertCircle, Image as ImageIcon, Trash2, X, DollarSign, CheckCircle2, Search, Lock, Unlock, Key, Users, UserPlus, Edit, Shield, Settings, AppWindow, Edit3, ToggleLeft, ToggleRight, ChevronLeft, ChevronRight } from 'lucide-react';
 
 // Your web app's Firebase configuration
 const firebaseConfig = {
@@ -75,7 +75,11 @@ export default function App() {
   const [showWarningModal, setShowWarningModal] = useState(false);
   const [warningDetails, setWarningDetails] = useState(null);
   const [successMessage, setSuccessMessage] = useState('');
+  
+  // Search & Pagination State
   const [searchQuery, setSearchQuery] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(10);
 
   // 1. 初始化登入驗證
   useEffect(() => {
@@ -168,6 +172,23 @@ export default function App() {
     };
     fetchAdmins();
   }, [db, user, isAdmin, adminRole, showAdminManager]);
+
+  // 當搜尋條件改變時，回到第一頁
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, itemsPerPage]);
+
+  // --- 搜尋過濾與分頁計算 ---
+  const filteredItems = items.filter(item => item.name.toLowerCase().includes(searchQuery.toLowerCase()) || item.store.toLowerCase().includes(searchQuery.toLowerCase()));
+  const totalPages = Math.ceil(filteredItems.length / itemsPerPage) || 1;
+  
+  // 防止在刪除最後一頁的唯一一筆資料時出錯
+  // ⚠️ 確保所有 Hook 都放在任何提前 return (如 loading 檢查) 之前
+  useEffect(() => {
+    if (currentPage > totalPages && totalPages > 0) {
+      setCurrentPage(totalPages);
+    }
+  }, [totalPages, currentPage]);
 
   // 進階的高壓縮圖片功能
   const compressImage = (file, maxWidth = 500, maxHeight = 500, quality = 0.5, mimeType = 'image/jpeg') => {
@@ -410,9 +431,12 @@ export default function App() {
     catch (error) { console.error("Error deleting document: ", error); }
   };
 
-  if (loading) return <div className="flex items-center justify-center min-h-screen bg-gray-50"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-emerald-500"></div></div>;
+  // 計算分頁範圍
+  const startIndex = (currentPage - 1) * itemsPerPage;
+  const paginatedItems = filteredItems.slice(startIndex, startIndex + itemsPerPage);
 
-  const filteredItems = items.filter(item => item.name.toLowerCase().includes(searchQuery.toLowerCase()) || item.store.toLowerCase().includes(searchQuery.toLowerCase()));
+  // ⚠️ 提前 return 的檢查必須放在所有 Hook 定義的下方
+  if (loading) return <div className="flex items-center justify-center min-h-screen bg-gray-50"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-emerald-500"></div></div>;
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-800 pb-20 md:pb-10">
@@ -511,7 +535,7 @@ export default function App() {
           </div>
 
           <div className={`grid grid-cols-1 ${isAdmin ? 'sm:grid-cols-2' : 'sm:grid-cols-2 lg:grid-cols-3'} gap-4`}>
-            {filteredItems.map((item) => (
+            {paginatedItems.map((item) => (
               <div key={item.id} className={`bg-white p-4 rounded-2xl shadow-sm border flex flex-col group hover:shadow-md transition-all ${isGlobalEditMode ? 'border-blue-200 ring-1 ring-blue-50' : 'border-gray-100'}`}>
                 <div className="flex justify-between items-start mb-3">
                   <h3 className="font-bold text-lg text-gray-800 break-all">{item.name}</h3>
@@ -539,10 +563,49 @@ export default function App() {
                 </div>
               </div>
             ))}
-            {filteredItems.length === 0 && (
+            {paginatedItems.length === 0 && (
                <div className="col-span-full py-10 text-center text-gray-400 border-2 border-dashed rounded-2xl">沒有找到符合的紀錄</div>
             )}
           </div>
+
+          {/* 分頁與每頁顯示數量控制器 */}
+          {filteredItems.length > 0 && (
+            <div className="mt-6 flex flex-col sm:flex-row items-center justify-between gap-4 bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
+              <div className="flex items-center gap-2 text-sm text-gray-600">
+                <span>每頁顯示：</span>
+                <select
+                  value={itemsPerPage}
+                  onChange={(e) => setItemsPerPage(Number(e.target.value))}
+                  className="border-gray-200 bg-gray-50 rounded-lg border px-3 py-1.5 outline-none focus:ring-2 focus:ring-emerald-500 transition-shadow"
+                >
+                  <option value={10}>10 筆</option>
+                  <option value={20}>20 筆</option>
+                  <option value={30}>30 筆</option>
+                </select>
+              </div>
+
+              <div className="flex items-center gap-4 text-sm text-gray-600">
+                <span>第 <strong className="text-gray-900">{currentPage}</strong> 頁 / 共 {totalPages} 頁 (總計 {filteredItems.length} 筆)</span>
+                <div className="flex gap-1.5">
+                  <button
+                    onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                    disabled={currentPage === 1}
+                    className="p-1.5 rounded-lg bg-gray-100 text-gray-600 hover:bg-gray-200 hover:text-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    <ChevronLeft className="w-5 h-5" />
+                  </button>
+                  <button
+                    onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                    disabled={currentPage === totalPages}
+                    className="p-1.5 rounded-lg bg-gray-100 text-gray-600 hover:bg-gray-200 hover:text-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    <ChevronRight className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
         </div>
       </main>
 
