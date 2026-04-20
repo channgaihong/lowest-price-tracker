@@ -2,11 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, query, where, getDocs, addDoc, updateDoc } from 'firebase/firestore';
-import { Camera, Plus, Store, Tag, Calendar, AlertCircle, Image as ImageIcon, Trash2, X, DollarSign, CheckCircle2, Search, Lock, Unlock, Key, Users, UserPlus, Edit, Shield, Settings } from 'lucide-react';
-
-// --- Firebase Initialization ---
-// TODO: Add SDKs for Firebase products that you want to use
-// https://firebase.google.com/docs/web/setup#available-libraries
+import { Camera, Plus, Store, Tag, Calendar, AlertCircle, Image as ImageIcon, Trash2, X, DollarSign, CheckCircle2, Search, Lock, Unlock, Key, Users, UserPlus, Edit, Shield, Settings, AppWindow } from 'lucide-react';
 
 // Your web app's Firebase configuration
 const firebaseConfig = {
@@ -35,6 +31,7 @@ const hashPassword = async (password) => {
 export default function App() {
   const [user, setUser] = useState(null);
   const [items, setItems] = useState([]);
+  const [systemSettings, setSystemSettings] = useState({});
   const [loading, setLoading] = useState(true);
   
   // Admin Authentication State
@@ -54,6 +51,7 @@ export default function App() {
   const [newAdminRole, setNewAdminRole] = useState('admin');
   const [editingAdminId, setEditingAdminId] = useState(null);
   const [editPassword, setEditPassword] = useState('');
+  const [isUploadingIcon, setIsUploadingIcon] = useState(false);
 
   // Personal Password Change State (All Admins)
   const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
@@ -74,7 +72,7 @@ export default function App() {
   const [successMessage, setSuccessMessage] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
 
-  // 1. 初始化登入驗證 (解決 Canvas 權限不足問題)
+  // 1. 初始化登入驗證
   useEffect(() => {
     if (!auth) {
       setLoading(false);
@@ -101,7 +99,7 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // 2. 讀取主要比價資料
+  // 2. 讀取主要比價資料 & 系統設定
   useEffect(() => {
     const isCanvas = typeof __firebase_config !== 'undefined';
     if (isCanvas && !user) return; // Canvas 必須等待驗證完成
@@ -110,8 +108,9 @@ export default function App() {
       return;
     }
     
+    // 讀取最低價資料
     const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'lowest_prices');
-    const unsubscribe = onSnapshot(colRef, (snapshot) => {
+    const unsubscribeItems = onSnapshot(colRef, (snapshot) => {
       const fetchedItems = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       fetchedItems.sort((a, b) => b.timestamp - a.timestamp);
       setItems(fetchedItems);
@@ -120,7 +119,31 @@ export default function App() {
       console.error("Error fetching data:", error);
       setLoading(false);
     });
-    return () => unsubscribe();
+
+    // 讀取系統全域設定 (如 Favicon)
+    const settingsRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'general');
+    const unsubscribeSettings = onSnapshot(settingsRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        setSystemSettings(data);
+        
+        // 動態套用 Favicon 到網頁上
+        if (data.customIcon) {
+          let link = document.querySelector("link[rel~='icon']");
+          if (!link) {
+            link = document.createElement('link');
+            link.rel = 'icon';
+            document.head.appendChild(link);
+          }
+          link.href = data.customIcon;
+        }
+      }
+    });
+
+    return () => {
+      unsubscribeItems();
+      unsubscribeSettings();
+    };
   }, [db, user]);
 
   // 3. 讀取管理員清單 (僅限超級管理員開啟管理介面時)
@@ -141,8 +164,8 @@ export default function App() {
     fetchAdmins();
   }, [db, user, isAdmin, adminRole, showAdminManager]);
 
-  // 圖片壓縮功能
-  const compressImage = (file) => {
+  // 進階的高壓縮圖片功能 (支援自訂寬度、高度、品質與格式)
+  const compressImage = (file, maxWidth = 500, maxHeight = 500, quality = 0.5, mimeType = 'image/jpeg') => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.readAsDataURL(file);
@@ -152,21 +175,46 @@ export default function App() {
         img.onload = () => {
           const canvas = document.createElement('canvas');
           let { width, height } = img;
-          if (width > height) { if (width > 800) { height *= 800 / width; width = 800; } } 
-          else { if (height > 800) { width *= 800 / height; height = 800; } }
-          canvas.width = width; canvas.height = height;
+          if (width > height) { 
+            if (width > maxWidth) { height *= maxWidth / width; width = maxWidth; } 
+          } else { 
+            if (height > maxHeight) { width *= maxHeight / height; height = maxHeight; } 
+          }
+          canvas.width = width; 
+          canvas.height = height;
           canvas.getContext('2d').drawImage(img, 0, 0, width, height);
-          resolve(canvas.toDataURL('image/jpeg', 0.7));
+          resolve(canvas.toDataURL(mimeType, quality)); // 應用高壓縮率
         };
       };
       reader.onerror = error => reject(error);
     });
   };
 
+  // 物品圖片上傳 (高壓縮 JPEG)
   const handleFileChange = async (e) => {
     const file = e.target.files[0];
     if (file && file.size <= 5 * 1024 * 1024) {
-      setPhotoBase64(await compressImage(file));
+      // 最大寬高 500x500，JPEG 品質 0.5，將佔用降到最低
+      setPhotoBase64(await compressImage(file, 500, 500, 0.5, 'image/jpeg'));
+    }
+  };
+
+  // 系統圖示 (Favicon) 上傳 (保留透明度的 PNG，極小尺寸)
+  const handleFaviconUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file || !db) return;
+    setIsUploadingIcon(true);
+    try {
+      // 捷徑圖示只需極小的尺寸 (128x128)，並保留透明度
+      const iconBase64 = await compressImage(file, 128, 128, 0.8, 'image/png');
+      const settingsRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'general');
+      await setDoc(settingsRef, { customIcon: iconBase64 }, { merge: true });
+      alert("✅ 系統捷徑圖示更新成功！");
+    } catch (err) {
+      console.error(err);
+      alert("圖示更新失敗，請稍後再試。");
+    } finally {
+      setIsUploadingIcon(false);
     }
   };
 
@@ -175,7 +223,7 @@ export default function App() {
     e.preventDefault();
     setAdminLoginError('');
     
-    // 預設無敵超級帳號 (純本地驗證，讓您可以建立第一個資料庫帳號)
+    // 預設無敵超級帳號
     if (adminUsername === 'root' && adminPassword === 'super123') {
       setIsAdmin(true);
       setAdminRole('super_admin');
@@ -193,7 +241,6 @@ export default function App() {
     try {
       const hashedInputPassword = await hashPassword(adminPassword);
 
-      // 檢查 Firebase 資料庫內的帳號 (優先以加密密碼查詢)
       const qHashed = query(
         collection(db, 'artifacts', appId, 'public', 'data', 'admin_users'), 
         where('username', '==', adminUsername),
@@ -211,7 +258,7 @@ export default function App() {
         return;
       }
 
-      // 如果找不到，為了向後相容舊帳號，試著搜尋「明文密碼」
+      // 相容舊帳號 (明文) 並自動升級
       const qPlain = query(
         collection(db, 'artifacts', appId, 'public', 'data', 'admin_users'), 
         where('username', '==', adminUsername),
@@ -223,7 +270,6 @@ export default function App() {
         const userData = snapshotPlain.docs[0].data();
         const docId = snapshotPlain.docs[0].id;
         
-        // 自動幫使用者升級為加密密碼
         await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'admin_users', docId), {
           password: hashedInputPassword
         });
@@ -258,7 +304,6 @@ export default function App() {
     if (!newAdminUser || !newAdminPass || !db) return;
     
     try {
-      // 檢查帳號是否重複
       const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'admin_users'), where('username', '==', newAdminUser));
       const snapshot = await getDocs(q);
       if (!snapshot.empty) {
@@ -266,10 +311,8 @@ export default function App() {
         return;
       }
 
-      // 將新密碼加密
       const hashedNewPass = await hashPassword(newAdminPass);
 
-      // 寫入新管理員
       await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'admin_users'), {
         username: newAdminUser,
         password: hashedNewPass,
@@ -277,11 +320,10 @@ export default function App() {
         createdAt: Date.now()
       });
       
-      alert("✅ 管理員新增成功！"); // 加入明確的成功提示
+      alert("✅ 管理員新增成功！"); 
 
       setNewAdminUser(''); setNewAdminPass(''); setNewAdminRole('admin');
       
-      // 重新讀取清單
       const updatedList = await getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'admin_users'));
       setAdminList(updatedList.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     } catch (err) {
@@ -305,7 +347,6 @@ export default function App() {
     }
   };
 
-  // 超級管理員強制修改其他管理員的密碼
   const handleUpdatePassword = async (id) => {
     const isCanvas = typeof __firebase_config !== 'undefined';
     if (isCanvas && !user) return;
@@ -319,7 +360,6 @@ export default function App() {
       setEditingAdminId(null);
       setEditPassword('');
       alert("✅ 密碼修改成功！");
-      // 更新本機畫面資料 (畫面不顯示密碼，所以只需刷新狀態)
       setAdminList(adminList.map(admin => admin.id === id ? { ...admin, password: hashedEditPass } : admin));
     } catch (err) {
       console.error("Error updating password", err);
@@ -410,15 +450,19 @@ export default function App() {
       <header className="bg-emerald-600 text-white p-4 shadow-md sticky top-0 z-10">
         <div className="max-w-5xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <Tag className="w-6 h-6" />
+            {systemSettings.customIcon ? (
+              <img src={systemSettings.customIcon} alt="Logo" className="w-6 h-6 object-contain" />
+            ) : (
+              <Tag className="w-6 h-6" />
+            )}
             <h1 className="text-xl font-bold">最低價記錄系統</h1>
           </div>
           
           <div className="flex items-center gap-3">
-            {/* 只有超級管理員可以看到帳號管理 */}
+            {/* 只有超級管理員可以看到系統管理 */}
             {isAdmin && adminRole === 'super_admin' && (
               <button onClick={() => setShowAdminManager(true)} className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 rounded-lg text-sm font-medium transition-colors">
-                <Users className="w-4 h-4" /> 帳號管理
+                <AppWindow className="w-4 h-4" /> 系統設定
               </button>
             )}
 
@@ -433,7 +477,7 @@ export default function App() {
               if(isAdmin) { setIsAdmin(false); setAdminRole(null); setAdminId(null); }
               else { setShowAdminLogin(true); }
             }} className="flex items-center gap-2 px-3 py-1.5 bg-emerald-800 hover:bg-emerald-900 rounded-full text-sm font-medium transition-colors">
-              {isAdmin ? <><Unlock className="w-4 h-4" /> 登出 ({adminRole === 'super_admin' ? '超級管理員' : '管理員'})</> : <><Lock className="w-4 h-4" /> 管理員登入</>}
+              {isAdmin ? <><Unlock className="w-4 h-4" /> 登出 ({adminRole === 'super_admin' ? '超級' : '一般'})</> : <><Lock className="w-4 h-4" /> 登入</>}
             </button>
           </div>
         </div>
@@ -450,18 +494,20 @@ export default function App() {
                 </h2>
               </div>
               <form onSubmit={handleSubmit} className="space-y-4">
-                 <div><label className="block text-sm font-medium text-gray-600 mb-1">日期</label><input type="date" required value={date} onChange={(e) => setDate(e.target.value)} className="w-full px-4 py-2 border rounded-xl" /></div>
-                 <div><label className="block text-sm font-medium text-gray-600 mb-1">物品名稱</label><input type="text" required placeholder="例如：衛生紙 12入" value={name} onChange={(e) => setName(e.target.value)} className="w-full px-4 py-2 border rounded-xl" /></div>
-                 <div><label className="block text-sm font-medium text-gray-600 mb-1">價格</label><input type="number" step="0.01" min="0" required placeholder="輸入價格" value={price} onChange={(e) => setPrice(e.target.value)} className="w-full px-4 py-2 border rounded-xl" /></div>
-                 <div><label className="block text-sm font-medium text-gray-600 mb-1">商店名稱</label><input type="text" required placeholder="例如：全聯" value={store} onChange={(e) => setStore(e.target.value)} className="w-full px-4 py-2 border rounded-xl" /></div>
+                 <div><label className="block text-sm font-medium text-gray-600 mb-1">日期</label><input type="date" required value={date} onChange={(e) => setDate(e.target.value)} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none" /></div>
+                 <div><label className="block text-sm font-medium text-gray-600 mb-1">物品名稱</label><input type="text" required placeholder="例如：衛生紙 12入" value={name} onChange={(e) => setName(e.target.value)} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none" /></div>
+                 <div><label className="block text-sm font-medium text-gray-600 mb-1">價格</label><input type="number" step="0.01" min="0" required placeholder="輸入價格" value={price} onChange={(e) => setPrice(e.target.value)} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none" /></div>
+                 <div><label className="block text-sm font-medium text-gray-600 mb-1">商店名稱</label><input type="text" required placeholder="例如：全聯" value={store} onChange={(e) => setStore(e.target.value)} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none" /></div>
                  <div>
-                  <label className="block text-sm font-medium text-gray-600 mb-1">圖片 (可選)</label>
-                  <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-gray-300 border-dashed rounded-xl cursor-pointer bg-gray-50 overflow-hidden relative">
+                  <label className="block text-sm font-medium text-gray-600 mb-1">圖片 (高壓縮儲存)</label>
+                  <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-gray-300 border-dashed rounded-xl cursor-pointer bg-gray-50 hover:bg-gray-100 transition-colors overflow-hidden relative">
                     {photoBase64 ? <img src={photoBase64} alt="Preview" className="w-full h-full object-cover" /> : <Camera className="w-8 h-8 text-gray-400" />}
                     <input type="file" className="hidden" accept="image/*" ref={fileInputRef} onChange={handleFileChange} />
                   </label>
                 </div>
-                <button type="submit" disabled={isSubmitting} className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-medium">記錄最低價</button>
+                <button type="submit" disabled={isSubmitting} className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-medium shadow-sm transition-all flex items-center justify-center gap-2 disabled:opacity-70">
+                  {isSubmitting ? <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : "記錄最低價"}
+                </button>
               </form>
             </div>
           </div>
@@ -474,26 +520,29 @@ export default function App() {
           
           <div className="mb-6 relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-            <input type="text" placeholder="搜尋物品名稱或商店..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-10 pr-4 py-3 border rounded-xl shadow-sm" />
+            <input type="text" placeholder="搜尋物品名稱或商店..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-10 pr-4 py-3 border rounded-xl shadow-sm focus:ring-2 focus:ring-emerald-500 outline-none" />
           </div>
 
           <div className={`grid grid-cols-1 ${isAdmin ? 'sm:grid-cols-2' : 'sm:grid-cols-2 lg:grid-cols-3'} gap-4`}>
             {filteredItems.map((item) => (
-              <div key={item.id} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex flex-col group">
+              <div key={item.id} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex flex-col group hover:shadow-md transition-shadow">
                 <div className="flex justify-between items-start mb-3">
                   <h3 className="font-bold text-lg text-gray-800 break-all">{item.name}</h3>
-                  {isAdmin && <button onClick={() => handleDelete(item.id)} className="text-gray-300 hover:text-red-500"><Trash2 className="w-4 h-4" /></button>}
+                  {isAdmin && <button onClick={() => handleDelete(item.id)} className="text-gray-300 hover:text-red-500 transition-colors"><Trash2 className="w-4 h-4" /></button>}
                 </div>
                 <div className="flex gap-4">
-                  {item.photo ? <img src={item.photo} alt={item.name} className="w-20 h-20 rounded-lg object-cover bg-gray-100" /> : <div className="w-20 h-20 rounded-lg bg-gray-50 border flex items-center justify-center"><ImageIcon className="w-8 h-8 text-gray-300" /></div>}
-                  <div className="flex-1 flex flex-col justify-center">
+                  {item.photo ? <img src={item.photo} alt={item.name} className="w-20 h-20 rounded-lg object-cover bg-gray-100 flex-shrink-0" /> : <div className="w-20 h-20 rounded-lg bg-gray-50 border flex items-center justify-center flex-shrink-0"><ImageIcon className="w-8 h-8 text-gray-300" /></div>}
+                  <div className="flex-1 flex flex-col justify-center min-w-0">
                     <div className="text-2xl font-black text-emerald-600">${item.price.toFixed(2)}</div>
-                    <div className="text-sm text-gray-600"><Store className="w-3 h-3 inline mr-1"/>{item.store}</div>
-                    <div className="text-xs text-gray-400 mt-1"><Calendar className="w-3 h-3 inline mr-1"/>{item.date}</div>
+                    <div className="text-sm text-gray-600 truncate"><Store className="w-3 h-3 inline mr-1"/>{item.store}</div>
+                    <div className="text-xs text-gray-400 mt-1 truncate"><Calendar className="w-3 h-3 inline mr-1"/>{item.date}</div>
                   </div>
                 </div>
               </div>
             ))}
+            {filteredItems.length === 0 && (
+               <div className="col-span-full py-10 text-center text-gray-400 border-2 border-dashed rounded-2xl">沒有找到符合的紀錄</div>
+            )}
           </div>
         </div>
       </main>
@@ -506,11 +555,11 @@ export default function App() {
             <form onSubmit={handleAdminAuth} className="space-y-4">
               <div>
                 <label className="text-sm text-gray-600 mb-1 block">帳號</label>
-                <input type="text" value={adminUsername} onChange={(e) => setAdminUsername(e.target.value)} className="w-full px-4 py-2 border rounded-xl" autoFocus />
+                <input type="text" value={adminUsername} onChange={(e) => setAdminUsername(e.target.value)} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none" autoFocus />
               </div>
               <div>
                 <label className="text-sm text-gray-600 mb-1 block">密碼</label>
-                <input type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} className="w-full px-4 py-2 border rounded-xl" />
+                <input type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none" />
               </div>
               {adminLoginError && <p className="text-rose-500 text-sm">{adminLoginError}</p>}
               <div className="flex gap-3 mt-4">
@@ -538,7 +587,7 @@ export default function App() {
                   required
                   value={personalNewPassword} 
                   onChange={(e) => setPersonalNewPassword(e.target.value)} 
-                  className="w-full px-4 py-2 border rounded-xl" 
+                  className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none" 
                   autoFocus 
                 />
               </div>
@@ -551,22 +600,39 @@ export default function App() {
         </div>
       )}
 
-      {/* --- 超級管理員專屬：帳號管理 Modal --- */}
+      {/* --- 超級管理員專屬：系統與帳號管理 Modal --- */}
       {showAdminManager && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
           <div className="bg-white rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6 shadow-2xl">
             <div className="flex justify-between items-center mb-6 border-b pb-4">
-              <h3 className="text-xl font-bold flex items-center gap-2"><Shield className="w-6 h-6 text-emerald-600"/> 系統帳號管理</h3>
+              <h3 className="text-xl font-bold flex items-center gap-2"><Shield className="w-6 h-6 text-emerald-600"/> 系統與帳號設定</h3>
               <button onClick={() => setShowAdminManager(false)} className="text-gray-400 hover:text-gray-600"><X className="w-6 h-6"/></button>
+            </div>
+
+            {/* 系統自訂圖示區塊 */}
+            <div className="bg-gray-50 p-4 rounded-xl border border-gray-200 mb-6">
+              <h4 className="font-bold text-gray-700 flex items-center gap-2 mb-3"><ImageIcon className="w-4 h-4"/> 系統自訂圖示 (Favicon)</h4>
+              <div className="flex items-center gap-4">
+                {systemSettings.customIcon ? (
+                   <img src={systemSettings.customIcon} alt="Favicon" className="w-12 h-12 rounded object-contain border bg-white" />
+                ) : (
+                   <div className="w-12 h-12 rounded border bg-gray-200 flex items-center justify-center text-xs text-gray-400">預設</div>
+                )}
+                <label className={`px-4 py-2 bg-white border border-gray-300 rounded-lg cursor-pointer hover:bg-gray-100 transition-colors text-sm font-medium ${isUploadingIcon ? 'opacity-50 pointer-events-none' : ''}`}>
+                  {isUploadingIcon ? '上傳中...' : '上傳新圖示'}
+                  <input type="file" className="hidden" accept="image/*" onChange={handleFaviconUpload} disabled={isUploadingIcon} />
+                </label>
+              </div>
+              <p className="text-xs text-gray-500 mt-2">建議使用正方形圖片，系統會自動壓縮以適合網站分頁標籤顯示。</p>
             </div>
 
             {/* 新增管理員區塊 */}
             <div className="bg-gray-50 p-4 rounded-xl border border-gray-200 mb-6">
               <h4 className="font-bold text-gray-700 flex items-center gap-2 mb-3"><UserPlus className="w-4 h-4"/> 新增管理員</h4>
               <form onSubmit={handleAddAdmin} className="flex flex-col sm:flex-row gap-3">
-                <input type="text" placeholder="輸入帳號" required value={newAdminUser} onChange={e => setNewAdminUser(e.target.value)} className="flex-1 px-3 py-2 border rounded-lg" />
-                <input type="text" placeholder="設定密碼" required value={newAdminPass} onChange={e => setNewAdminPass(e.target.value)} className="flex-1 px-3 py-2 border rounded-lg" />
-                <select value={newAdminRole} onChange={e => setNewAdminRole(e.target.value)} className="px-3 py-2 border rounded-lg bg-white">
+                <input type="text" placeholder="輸入帳號" required value={newAdminUser} onChange={e => setNewAdminUser(e.target.value)} className="flex-1 px-3 py-2 border rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none" />
+                <input type="text" placeholder="設定密碼" required value={newAdminPass} onChange={e => setNewAdminPass(e.target.value)} className="flex-1 px-3 py-2 border rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none" />
+                <select value={newAdminRole} onChange={e => setNewAdminRole(e.target.value)} className="px-3 py-2 border rounded-lg bg-white focus:ring-2 focus:ring-emerald-500 outline-none">
                   <option value="admin">一般管理員</option>
                   <option value="super_admin">超級管理員</option>
                 </select>
@@ -579,7 +645,7 @@ export default function App() {
               <h4 className="font-bold text-gray-700 mb-3">現有帳號清單</h4>
               <div className="space-y-3">
                 {adminList.map(admin => (
-                  <div key={admin.id} className="flex items-center justify-between p-3 border rounded-xl hover:bg-gray-50">
+                  <div key={admin.id} className="flex items-center justify-between p-3 border rounded-xl hover:bg-gray-50 transition-colors">
                     <div className="flex items-center gap-3">
                       <div className={`px-2 py-1 text-xs rounded font-bold ${admin.role === 'super_admin' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>
                         {admin.role === 'super_admin' ? '超級' : '一般'}
@@ -590,17 +656,17 @@ export default function App() {
                     <div className="flex items-center gap-2">
                       {editingAdminId === admin.id ? (
                         <div className="flex items-center gap-2">
-                          <input type="text" placeholder="新密碼" value={editPassword} onChange={e => setEditPassword(e.target.value)} className="px-2 py-1 text-sm border rounded" autoFocus />
-                          <button onClick={() => handleUpdatePassword(admin.id)} className="text-xs bg-emerald-500 text-white px-2 py-1 rounded">儲存</button>
-                          <button onClick={() => {setEditingAdminId(null); setEditPassword('');}} className="text-xs bg-gray-200 px-2 py-1 rounded">取消</button>
+                          <input type="text" placeholder="新密碼" value={editPassword} onChange={e => setEditPassword(e.target.value)} className="px-2 py-1 text-sm border rounded focus:ring-2 focus:ring-emerald-500 outline-none" autoFocus />
+                          <button onClick={() => handleUpdatePassword(admin.id)} className="text-xs bg-emerald-500 text-white px-2 py-1 rounded hover:bg-emerald-600">儲存</button>
+                          <button onClick={() => {setEditingAdminId(null); setEditPassword('');}} className="text-xs bg-gray-200 px-2 py-1 rounded hover:bg-gray-300">取消</button>
                         </div>
                       ) : (
-                        <button onClick={() => setEditingAdminId(admin.id)} className="p-1.5 text-gray-400 hover:text-emerald-600 bg-gray-100 rounded-md" title="強制修改密碼">
+                        <button onClick={() => setEditingAdminId(admin.id)} className="p-1.5 text-gray-400 hover:text-emerald-600 bg-gray-100 rounded-md transition-colors" title="強制修改密碼">
                           <Edit className="w-4 h-4"/>
                         </button>
                       )}
                       
-                      <button onClick={() => handleDeleteAdmin(admin.id)} className="p-1.5 text-gray-400 hover:text-rose-600 bg-gray-100 rounded-md" title="刪除帳號">
+                      <button onClick={() => handleDeleteAdmin(admin.id)} className="p-1.5 text-gray-400 hover:text-rose-600 bg-gray-100 rounded-md transition-colors" title="刪除帳號">
                         <Trash2 className="w-4 h-4"/>
                       </button>
                     </div>
@@ -617,11 +683,11 @@ export default function App() {
       {showWarningModal && warningDetails && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
           <div className="bg-white rounded-2xl w-full max-w-md overflow-hidden">
-            <div className="bg-rose-500 p-4 flex justify-between items-center text-white"><div className="font-bold">價格較高，不作記錄</div><button onClick={() => setShowWarningModal(false)}><X className="w-6 h-6"/></button></div>
+            <div className="bg-rose-500 p-4 flex justify-between items-center text-white"><div className="font-bold flex items-center gap-2"><AlertCircle className="w-5 h-5"/> 價格較高，不作記錄</div><button onClick={() => setShowWarningModal(false)}><X className="w-6 h-6"/></button></div>
             <div className="p-6">
               <p className="mb-4">您輸入的 {warningDetails.newName} 價格為 <strong className="text-rose-600">${warningDetails.newPrice}</strong>。</p>
-              <div className="bg-gray-50 rounded-xl p-4 mb-6"><p className="text-sm text-gray-500">歷史最低價為：</p><div className="text-3xl font-black text-emerald-600 mb-2">${warningDetails.oldPrice}</div></div>
-              <button onClick={() => setShowWarningModal(false)} className="w-full py-3 bg-gray-900 text-white rounded-xl">我知道了</button>
+              <div className="bg-gray-50 rounded-xl p-4 mb-6"><p className="text-sm text-gray-500 mb-1">歷史最低價為：</p><div className="text-3xl font-black text-emerald-600 mb-2">${warningDetails.oldPrice}</div></div>
+              <button onClick={() => setShowWarningModal(false)} className="w-full py-3 bg-gray-900 text-white hover:bg-gray-800 rounded-xl transition-colors">我知道了</button>
             </div>
           </div>
         </div>
