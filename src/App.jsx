@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, query, where, getDocs, addDoc, updateDoc } from 'firebase/firestore';
-import { Camera, Plus, Store, Tag, Calendar, AlertCircle, Image as ImageIcon, Trash2, X, DollarSign, CheckCircle2, Search, Lock, Unlock, Key, Users, UserPlus, Edit, Shield, Settings, AppWindow } from 'lucide-react';
+import { Camera, Plus, Store, Tag, Calendar, AlertCircle, Image as ImageIcon, Trash2, X, DollarSign, CheckCircle2, Search, Lock, Unlock, Key, Users, UserPlus, Edit, Shield, Settings, AppWindow, Edit3, ToggleLeft, ToggleRight } from 'lucide-react';
 
 // Your web app's Firebase configuration
 const firebaseConfig = {
@@ -56,6 +56,11 @@ export default function App() {
   // Personal Password Change State (All Admins)
   const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
   const [personalNewPassword, setPersonalNewPassword] = useState('');
+
+  // Record Editing State (Global Edit Mode)
+  const [isGlobalEditMode, setIsGlobalEditMode] = useState(false);
+  const [editingItem, setEditingItem] = useState(null);
+  const editFileInputRef = useRef(null);
 
   // Form State
   const [name, setName] = useState('');
@@ -164,7 +169,7 @@ export default function App() {
     fetchAdmins();
   }, [db, user, isAdmin, adminRole, showAdminManager]);
 
-  // 進階的高壓縮圖片功能 (支援自訂寬度、高度、品質與格式)
+  // 進階的高壓縮圖片功能
   const compressImage = (file, maxWidth = 500, maxHeight = 500, quality = 0.5, mimeType = 'image/jpeg') => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -190,22 +195,29 @@ export default function App() {
     });
   };
 
-  // 物品圖片上傳 (高壓縮 JPEG)
+  // 新增記錄的圖片上傳
   const handleFileChange = async (e) => {
     const file = e.target.files[0];
     if (file && file.size <= 5 * 1024 * 1024) {
-      // 最大寬高 500x500，JPEG 品質 0.5，將佔用降到最低
       setPhotoBase64(await compressImage(file, 500, 500, 0.5, 'image/jpeg'));
     }
   };
 
-  // 系統圖示 (Favicon) 上傳 (保留透明度的 PNG，極小尺寸)
+  // 編輯記錄的圖片上傳
+  const handleEditFileChange = async (e) => {
+    const file = e.target.files[0];
+    if (file && file.size <= 5 * 1024 * 1024) {
+      const compressed = await compressImage(file, 500, 500, 0.5, 'image/jpeg');
+      setEditingItem(prev => ({ ...prev, photo: compressed }));
+    }
+  };
+
+  // 系統圖示 (Favicon) 上傳
   const handleFaviconUpload = async (e) => {
     const file = e.target.files[0];
     if (!file || !db) return;
     setIsUploadingIcon(true);
     try {
-      // 捷徑圖示只需極小的尺寸 (128x128)，並保留透明度
       const iconBase64 = await compressImage(file, 128, 128, 0.8, 'image/png');
       const settingsRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'general');
       await setDoc(settingsRef, { customIcon: iconBase64 }, { merge: true });
@@ -218,12 +230,11 @@ export default function App() {
     }
   };
 
-  // --- 登入邏輯 (含加密比對) ---
+  // --- 登入邏輯 ---
   const handleAdminAuth = async (e) => {
     e.preventDefault();
     setAdminLoginError('');
     
-    // 預設無敵超級帳號
     if (adminUsername === 'root' && adminPassword === 'super123') {
       setIsAdmin(true);
       setAdminRole('super_admin');
@@ -241,49 +252,28 @@ export default function App() {
     try {
       const hashedInputPassword = await hashPassword(adminPassword);
 
-      const qHashed = query(
-        collection(db, 'artifacts', appId, 'public', 'data', 'admin_users'), 
-        where('username', '==', adminUsername),
-        where('password', '==', hashedInputPassword)
-      );
+      const qHashed = query(collection(db, 'artifacts', appId, 'public', 'data', 'admin_users'), where('username', '==', adminUsername), where('password', '==', hashedInputPassword));
       const snapshotHashed = await getDocs(qHashed);
       
       if (!snapshotHashed.empty) {
         const userData = snapshotHashed.docs[0].data();
-        setIsAdmin(true);
-        setAdminRole(userData.role);
-        setAdminId(snapshotHashed.docs[0].id);
-        setShowAdminLogin(false);
-        resetLoginStates();
+        setIsAdmin(true); setAdminRole(userData.role); setAdminId(snapshotHashed.docs[0].id); setShowAdminLogin(false); resetLoginStates();
         return;
       }
 
-      // 相容舊帳號 (明文) 並自動升級
-      const qPlain = query(
-        collection(db, 'artifacts', appId, 'public', 'data', 'admin_users'), 
-        where('username', '==', adminUsername),
-        where('password', '==', adminPassword)
-      );
+      // 相容舊帳號
+      const qPlain = query(collection(db, 'artifacts', appId, 'public', 'data', 'admin_users'), where('username', '==', adminUsername), where('password', '==', adminPassword));
       const snapshotPlain = await getDocs(qPlain);
 
       if (!snapshotPlain.empty) {
         const userData = snapshotPlain.docs[0].data();
         const docId = snapshotPlain.docs[0].id;
-        
-        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'admin_users', docId), {
-          password: hashedInputPassword
-        });
-
-        setIsAdmin(true);
-        setAdminRole(userData.role);
-        setAdminId(docId);
-        setShowAdminLogin(false);
-        resetLoginStates();
+        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'admin_users', docId), { password: hashedInputPassword });
+        setIsAdmin(true); setAdminRole(userData.role); setAdminId(docId); setShowAdminLogin(false); resetLoginStates();
         return;
       }
 
       setAdminLoginError('帳號或密碼錯誤。');
-
     } catch (err) {
       console.error("Login check failed", err);
       setAdminLoginError('連線錯誤，請稍後再試。');
@@ -291,12 +281,10 @@ export default function App() {
   };
 
   const resetLoginStates = () => {
-    setAdminUsername('');
-    setAdminPassword('');
-    setAdminLoginError('');
+    setAdminUsername(''); setAdminPassword(''); setAdminLoginError('');
   };
 
-  // --- 超級管理員功能：新增與管理管理員 (加密寫入) ---
+  // --- 管理員操作 ---
   const handleAddAdmin = async (e) => {
     e.preventDefault();
     const isCanvas = typeof __firebase_config !== 'undefined';
@@ -306,29 +294,17 @@ export default function App() {
     try {
       const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'admin_users'), where('username', '==', newAdminUser));
       const snapshot = await getDocs(q);
-      if (!snapshot.empty) {
-        alert("此帳號名稱已存在，請使用其他名稱！");
-        return;
-      }
+      if (!snapshot.empty) { alert("此帳號名稱已存在，請使用其他名稱！"); return; }
 
       const hashedNewPass = await hashPassword(newAdminPass);
-
-      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'admin_users'), {
-        username: newAdminUser,
-        password: hashedNewPass,
-        role: newAdminRole,
-        createdAt: Date.now()
-      });
-      
+      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'admin_users'), { username: newAdminUser, password: hashedNewPass, role: newAdminRole, createdAt: Date.now() });
       alert("✅ 管理員新增成功！"); 
-
       setNewAdminUser(''); setNewAdminPass(''); setNewAdminRole('admin');
       
       const updatedList = await getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'admin_users'));
       setAdminList(updatedList.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     } catch (err) {
-      console.error("Error adding admin", err);
-      alert("新增失敗，請稍後再試：" + err.message);
+      console.error("Error adding admin", err); alert("新增失敗，請稍後再試：" + err.message);
     }
   };
 
@@ -342,9 +318,7 @@ export default function App() {
       await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'admin_users', id));
       setAdminList(adminList.filter(admin => admin.id !== id));
       alert("已成功刪除。");
-    } catch (err) {
-      console.error("Error deleting admin", err);
-    }
+    } catch (err) { console.error("Error deleting admin", err); }
   };
 
   const handleUpdatePassword = async (id) => {
@@ -354,47 +328,26 @@ export default function App() {
     
     try {
       const hashedEditPass = await hashPassword(editPassword);
-      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'admin_users', id), {
-        password: hashedEditPass
-      });
-      setEditingAdminId(null);
-      setEditPassword('');
-      alert("✅ 密碼修改成功！");
+      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'admin_users', id), { password: hashedEditPass });
+      setEditingAdminId(null); setEditPassword(''); alert("✅ 密碼修改成功！");
       setAdminList(adminList.map(admin => admin.id === id ? { ...admin, password: hashedEditPass } : admin));
-    } catch (err) {
-      console.error("Error updating password", err);
-      alert("修改失敗，請稍後再試。");
-    }
+    } catch (err) { console.error("Error updating password", err); alert("修改失敗，請稍後再試。"); }
   };
 
-  // --- 所有管理員功能：修改個人密碼 ---
   const handleUpdateOwnPassword = async (e) => {
     e.preventDefault();
     const isCanvas = typeof __firebase_config !== 'undefined';
     if (isCanvas && !user) return;
     if (!db || !personalNewPassword) return;
-    
-    if (adminId === 'root') {
-      alert("內建的 Root 帳號為系統預設，無法在此修改密碼。");
-      return;
-    }
-
+    if (adminId === 'root') { alert("內建的 Root 帳號為系統預設，無法在此修改密碼。"); return; }
     try {
       const hashedPersonalPass = await hashPassword(personalNewPassword);
-      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'admin_users', adminId), {
-        password: hashedPersonalPass
-      });
-      
-      alert("✅ 您的密碼已成功修改！");
-      setShowChangePasswordModal(false);
-      setPersonalNewPassword('');
-    } catch (err) {
-      console.error("Error updating own password", err);
-      alert("修改失敗，請稍後再試。");
-    }
+      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'admin_users', adminId), { password: hashedPersonalPass });
+      alert("✅ 您的密碼已成功修改！"); setShowChangePasswordModal(false); setPersonalNewPassword('');
+    } catch (err) { console.error("Error updating own password", err); alert("修改失敗，請稍後再試。"); }
   };
 
-  // --- 記錄最低價表單送出 ---
+  // --- 記錄管理操作 ---
   const handleSubmit = async (e) => {
     e.preventDefault();
     const isCanvas = typeof __firebase_config !== 'undefined';
@@ -406,27 +359,45 @@ export default function App() {
 
     if (existingItem && numPrice > existingItem.price) {
       setWarningDetails({ newName: name, newPrice: numPrice, oldPrice: existingItem.price, oldStore: existingItem.store, oldDate: existingItem.date });
-      setShowWarningModal(true);
-      return;
+      setShowWarningModal(true); return;
     }
 
     setIsSubmitting(true);
     try {
       const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'lowest_prices');
       const docRef = existingItem ? doc(db, 'artifacts', appId, 'public', 'data', 'lowest_prices', existingItem.id) : doc(colRef);
-      
-      await setDoc(docRef, {
-        name: name.trim(), price: numPrice, store: store.trim(), date: date, photo: photoBase64, timestamp: Date.now()
-      });
-
+      await setDoc(docRef, { name: name.trim(), price: numPrice, store: store.trim(), date: date, photo: photoBase64, timestamp: Date.now() });
       setSuccessMessage(`已成功記錄 ${name.trim()} 的最低價：$${numPrice}`);
       setTimeout(() => setSuccessMessage(''), 3000);
       setName(''); setPrice(''); setStore(''); setPhotoBase64('');
       if (fileInputRef.current) fileInputRef.current.value = '';
+    } catch (error) { console.error("Error saving document: ", error); } finally { setIsSubmitting(false); }
+  };
+
+  // 編輯現有記錄
+  const handleUpdateItem = async (e) => {
+    e.preventDefault();
+    const isCanvas = typeof __firebase_config !== 'undefined';
+    if (isCanvas && !user) return;
+    if (!db || !isAdmin || !editingItem) return;
+
+    try {
+      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'lowest_prices', editingItem.id);
+      await updateDoc(docRef, {
+        name: editingItem.name.trim(),
+        price: parseFloat(editingItem.price),
+        store: editingItem.store.trim(),
+        date: editingItem.date,
+        photo: editingItem.photo,
+        // 編輯時更新時間戳，使其跑到最上方
+        timestamp: Date.now()
+      });
+      setSuccessMessage(`已成功更新 ${editingItem.name.trim()} 的記錄！`);
+      setTimeout(() => setSuccessMessage(''), 3000);
+      setEditingItem(null);
     } catch (error) {
-      console.error("Error saving document: ", error);
-    } finally {
-      setIsSubmitting(false);
+      console.error("Error updating document: ", error);
+      alert("更新失敗，請稍後再試。");
     }
   };
 
@@ -434,7 +405,6 @@ export default function App() {
     const isCanvas = typeof __firebase_config !== 'undefined';
     if (isCanvas && !user) return;
     if (!db || !isAdmin) return;
-    
     if (!window.confirm("確定要刪除這筆比價紀錄嗎？")) return;
     try { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'lowest_prices', id)); } 
     catch (error) { console.error("Error deleting document: ", error); }
@@ -462,22 +432,22 @@ export default function App() {
             {/* 只有超級管理員可以看到系統管理 */}
             {isAdmin && adminRole === 'super_admin' && (
               <button onClick={() => setShowAdminManager(true)} className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 rounded-lg text-sm font-medium transition-colors">
-                <AppWindow className="w-4 h-4" /> 系統設定
+                <AppWindow className="w-4 h-4" /> <span className="hidden sm:inline">系統設定</span>
               </button>
             )}
 
             {/* 所有管理員都能修改自己的密碼 */}
             {isAdmin && (
                <button onClick={() => setShowChangePasswordModal(true)} className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 rounded-lg text-sm font-medium transition-colors">
-                 <Settings className="w-4 h-4" /> 修改密碼
+                 <Settings className="w-4 h-4" /> <span className="hidden sm:inline">修改密碼</span>
                </button>
             )}
 
             <button onClick={() => {
-              if(isAdmin) { setIsAdmin(false); setAdminRole(null); setAdminId(null); }
+              if(isAdmin) { setIsAdmin(false); setAdminRole(null); setAdminId(null); setIsGlobalEditMode(false); }
               else { setShowAdminLogin(true); }
             }} className="flex items-center gap-2 px-3 py-1.5 bg-emerald-800 hover:bg-emerald-900 rounded-full text-sm font-medium transition-colors">
-              {isAdmin ? <><Unlock className="w-4 h-4" /> 登出 ({adminRole === 'super_admin' ? '超級' : '一般'})</> : <><Lock className="w-4 h-4" /> 登入</>}
+              {isAdmin ? <><Unlock className="w-4 h-4" /> <span className="hidden sm:inline">登出 ({adminRole === 'super_admin' ? '超級' : '一般'})</span></> : <><Lock className="w-4 h-4" /> 登入</>}
             </button>
           </div>
         </div>
@@ -518,17 +488,46 @@ export default function App() {
           {successMessage && <div className="mb-4 p-3 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-xl flex items-center gap-2"><CheckCircle2 className="w-5 h-5" />{successMessage}</div>}
           {!isAdmin && <div className="mb-6 bg-blue-50 text-blue-700 p-4 rounded-xl border border-blue-100"><p className="text-sm">目前為公開檢視模式，登入管理員以新增紀錄。</p></div>}
           
-          <div className="mb-6 relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-            <input type="text" placeholder="搜尋物品名稱或商店..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-10 pr-4 py-3 border rounded-xl shadow-sm focus:ring-2 focus:ring-emerald-500 outline-none" />
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+              <input type="text" placeholder="搜尋物品名稱或商店..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-10 pr-4 py-3 border rounded-xl shadow-sm focus:ring-2 focus:ring-emerald-500 outline-none" />
+            </div>
+
+            {/* 全域編輯功能按鈕 (管理員可見) */}
+            {isAdmin && (
+              <button 
+                onClick={() => setIsGlobalEditMode(!isGlobalEditMode)} 
+                className={`flex items-center gap-2 px-4 py-3 rounded-xl shadow-sm font-medium transition-colors whitespace-nowrap border ${
+                  isGlobalEditMode 
+                    ? 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100' 
+                    : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                }`}
+              >
+                {isGlobalEditMode ? <ToggleRight className="w-5 h-5 text-blue-600" /> : <ToggleLeft className="w-5 h-5 text-gray-400" />}
+                {isGlobalEditMode ? '關閉編輯模式' : '啟用編輯模式'}
+              </button>
+            )}
           </div>
 
           <div className={`grid grid-cols-1 ${isAdmin ? 'sm:grid-cols-2' : 'sm:grid-cols-2 lg:grid-cols-3'} gap-4`}>
             {filteredItems.map((item) => (
-              <div key={item.id} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex flex-col group hover:shadow-md transition-shadow">
+              <div key={item.id} className={`bg-white p-4 rounded-2xl shadow-sm border flex flex-col group hover:shadow-md transition-all ${isGlobalEditMode ? 'border-blue-200 ring-1 ring-blue-50' : 'border-gray-100'}`}>
                 <div className="flex justify-between items-start mb-3">
                   <h3 className="font-bold text-lg text-gray-800 break-all">{item.name}</h3>
-                  {isAdmin && <button onClick={() => handleDelete(item.id)} className="text-gray-300 hover:text-red-500 transition-colors"><Trash2 className="w-4 h-4" /></button>}
+                  {isAdmin && (
+                    <div className="flex items-center gap-2">
+                      {/* 只有在啟用全域編輯模式時，才顯示單個卡片的編輯按鈕 */}
+                      {isGlobalEditMode && (
+                        <button onClick={() => setEditingItem(item)} className="p-1 text-gray-300 hover:text-blue-500 bg-gray-50 hover:bg-blue-50 rounded transition-colors" title="編輯這筆記錄">
+                          <Edit3 className="w-4 h-4" />
+                        </button>
+                      )}
+                      <button onClick={() => handleDelete(item.id)} className="p-1 text-gray-300 hover:text-red-500 bg-gray-50 hover:bg-red-50 rounded transition-colors" title="刪除記錄">
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  )}
                 </div>
                 <div className="flex gap-4">
                   {item.photo ? <img src={item.photo} alt={item.name} className="w-20 h-20 rounded-lg object-cover bg-gray-100 flex-shrink-0" /> : <div className="w-20 h-20 rounded-lg bg-gray-50 border flex items-center justify-center flex-shrink-0"><ImageIcon className="w-8 h-8 text-gray-300" /></div>}
@@ -546,6 +545,54 @@ export default function App() {
           </div>
         </div>
       </main>
+
+      {/* --- 編輯現有記錄 Modal --- */}
+      {editingItem && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl w-full max-w-md p-6 shadow-2xl animate-fade-in">
+            <div className="flex justify-between items-center mb-4 border-b pb-3">
+              <h3 className="text-xl font-bold text-blue-700 flex items-center gap-2">
+                <Edit3 className="w-5 h-5" /> 編輯記錄
+              </h3>
+              <button onClick={() => setEditingItem(null)} className="text-gray-400 hover:text-gray-600"><X className="w-6 h-6"/></button>
+            </div>
+            
+            <form onSubmit={handleUpdateItem} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-600 mb-1">日期</label>
+                <input type="date" required value={editingItem.date} onChange={(e) => setEditingItem({...editingItem, date: e.target.value})} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-blue-500 outline-none bg-blue-50/30" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-600 mb-1">物品名稱</label>
+                <input type="text" required value={editingItem.name} onChange={(e) => setEditingItem({...editingItem, name: e.target.value})} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-blue-500 outline-none bg-blue-50/30" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-600 mb-1">價格</label>
+                <input type="number" step="0.01" min="0" required value={editingItem.price} onChange={(e) => setEditingItem({...editingItem, price: e.target.value})} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-blue-500 outline-none bg-blue-50/30" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-600 mb-1">商店名稱</label>
+                <input type="text" required value={editingItem.store} onChange={(e) => setEditingItem({...editingItem, store: e.target.value})} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-blue-500 outline-none bg-blue-50/30" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-600 mb-1">更新圖片 (選填)</label>
+                <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-blue-200 border-dashed rounded-xl cursor-pointer bg-blue-50 hover:bg-blue-100 transition-colors overflow-hidden relative">
+                  {editingItem.photo ? <img src={editingItem.photo} alt="Preview" className="w-full h-full object-cover" /> : <div className="text-gray-400 flex flex-col items-center"><Camera className="w-8 h-8 mb-1" /><span className="text-xs">無圖片，點擊上傳</span></div>}
+                  <div className="absolute inset-0 bg-black/30 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity">
+                    <span className="text-white text-sm font-medium">點擊更換圖片</span>
+                  </div>
+                  <input type="file" className="hidden" accept="image/*" ref={editFileInputRef} onChange={handleEditFileChange} />
+                </label>
+              </div>
+              
+              <div className="flex gap-3 mt-6">
+                <button type="button" onClick={() => setEditingItem(null)} className="flex-1 py-3 bg-gray-100 text-gray-700 rounded-xl hover:bg-gray-200 font-medium">取消</button>
+                <button type="submit" className="flex-1 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-medium transition-colors">儲存變更</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* --- 管理員登入 Modal --- */}
       {showAdminLogin && (
