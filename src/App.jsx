@@ -183,33 +183,44 @@ export default function App() {
     setCurrentPage(1);
   }, [searchQuery, itemsPerPage]);
 
-  // --- 相機掃描器邏輯 ---
+  // --- 相機自動掃描器邏輯 ---
   useEffect(() => {
-    let scanner = null;
+    let html5QrCode = null;
+    
     if (isScanning) {
       const initScanner = () => {
-        if (document.getElementById('reader')) {
-          scanner = new window.Html5QrcodeScanner(
-            "reader",
-            { fps: 10, qrbox: { width: 250, height: 250 } },
-            false
-          );
-          scanner.render((decodedText) => {
-            // 掃描成功後的處理
-            if (scanTarget === 'form') setBarcode(decodedText);
-            else if (scanTarget === 'edit') setEditingItem(prev => ({ ...prev, barcode: decodedText }));
-            else if (scanTarget === 'search') setSearchQuery(decodedText);
-            
+        if (document.getElementById('reader') && window.Html5Qrcode) {
+          html5QrCode = new window.Html5Qrcode("reader");
+          
+          // 自動請求相機權限，並強制使用後置鏡頭 (environment)
+          html5QrCode.start(
+            { facingMode: "environment" },
+            {
+              fps: 10,
+              qrbox: { width: 250, height: 250 }
+            },
+            (decodedText) => {
+              // 掃描成功後的處理
+              if (scanTarget === 'form') setBarcode(decodedText);
+              else if (scanTarget === 'edit') setEditingItem(prev => ({ ...prev, barcode: decodedText }));
+              else if (scanTarget === 'search') setSearchQuery(decodedText);
+              
+              setIsScanning(false);
+              html5QrCode.stop().catch(err => console.error("停止相機失敗:", err));
+            },
+            (errorMessage) => {
+              // 忽略掃描中的錯誤警告 (如：尚未對準條碼)
+            }
+          ).catch((err) => {
+            console.error("無法啟動相機:", err);
+            alert("無法自動啟動相機，請確認您已授予瀏覽器相機權限！");
             setIsScanning(false);
-            if (scanner) scanner.clear();
-          }, (err) => {
-            // 忽略持續掃描中的錯誤
           });
         }
       };
 
       // 動態載入 html5-qrcode 套件
-      if (!window.Html5QrcodeScanner) {
+      if (!window.Html5Qrcode) {
         const script = document.createElement('script');
         script.src = "https://unpkg.com/html5-qrcode";
         script.async = true;
@@ -222,8 +233,9 @@ export default function App() {
     }
     
     return () => {
-      if (scanner) {
-        scanner.clear().catch(e => console.error("Failed to clear scanner", e));
+      // 確保組件卸載時關閉相機
+      if (html5QrCode && html5QrCode.isScanning) {
+        html5QrCode.stop().catch(e => console.error("關閉相機失敗", e));
       }
     };
   }, [isScanning, scanTarget]);
