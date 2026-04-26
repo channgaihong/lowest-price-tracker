@@ -2,9 +2,9 @@ import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, query, where, getDocs, addDoc, updateDoc } from 'firebase/firestore';
-import { Camera, Plus, Store, Tag, Calendar, AlertCircle, Image as ImageIcon, Trash2, X, DollarSign, CheckCircle2, Search, Lock, Unlock, Key, Users, UserPlus, Edit, Shield, Settings, AppWindow, Edit3, ToggleLeft, ToggleRight, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Camera, Plus, Store, Tag, Calendar, AlertCircle, Image as ImageIcon, Trash2, X, DollarSign, CheckCircle2, Search, Lock, Unlock, Key, Users, UserPlus, Edit, Shield, Settings, AppWindow, Edit3, ToggleLeft, ToggleRight, ChevronLeft, ChevronRight, Barcode, ScanLine } from 'lucide-react';
 
-// Your web app's Firebase configuration
+// --- Firebase 初始設定 ---
 const firebaseConfig = {
   apiKey: "AIzaSyB5pltbYRSQ8SdzZHu8dOqy7d7Vmh6r9CE",
   authDomain: "lowest-price-d02e6.firebaseapp.com",
@@ -66,6 +66,7 @@ export default function App() {
   const [name, setName] = useState('');
   const [price, setPrice] = useState('');
   const [store, setStore] = useState('');
+  const [barcode, setBarcode] = useState(''); // 新增條碼狀態
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
   const [photoBase64, setPhotoBase64] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -79,7 +80,11 @@ export default function App() {
   // Search & Pagination State
   const [searchQuery, setSearchQuery] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
-  const [itemsPerPage, setItemsPerPage] = useState(10);
+  const [itemsPerPage, setItemsPerPage] = useState(12);
+
+  // Scanner State
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanTarget, setScanTarget] = useState(null); // 'form', 'edit', 'search'
 
   // 1. 初始化登入驗證
   useEffect(() => {
@@ -178,12 +183,60 @@ export default function App() {
     setCurrentPage(1);
   }, [searchQuery, itemsPerPage]);
 
-  // --- 搜尋過濾與分頁計算 ---
-  const filteredItems = items.filter(item => item.name.toLowerCase().includes(searchQuery.toLowerCase()) || item.store.toLowerCase().includes(searchQuery.toLowerCase()));
+  // --- 相機掃描器邏輯 ---
+  useEffect(() => {
+    let scanner = null;
+    if (isScanning) {
+      const initScanner = () => {
+        if (document.getElementById('reader')) {
+          scanner = new window.Html5QrcodeScanner(
+            "reader",
+            { fps: 10, qrbox: { width: 250, height: 250 } },
+            false
+          );
+          scanner.render((decodedText) => {
+            // 掃描成功後的處理
+            if (scanTarget === 'form') setBarcode(decodedText);
+            else if (scanTarget === 'edit') setEditingItem(prev => ({ ...prev, barcode: decodedText }));
+            else if (scanTarget === 'search') setSearchQuery(decodedText);
+            
+            setIsScanning(false);
+            if (scanner) scanner.clear();
+          }, (err) => {
+            // 忽略持續掃描中的錯誤
+          });
+        }
+      };
+
+      // 動態載入 html5-qrcode 套件
+      if (!window.Html5QrcodeScanner) {
+        const script = document.createElement('script');
+        script.src = "https://unpkg.com/html5-qrcode";
+        script.async = true;
+        script.onload = initScanner;
+        document.body.appendChild(script);
+      } else {
+        // 延遲一點確保 DOM 已經渲染 reader
+        setTimeout(initScanner, 100);
+      }
+    }
+    
+    return () => {
+      if (scanner) {
+        scanner.clear().catch(e => console.error("Failed to clear scanner", e));
+      }
+    };
+  }, [isScanning, scanTarget]);
+
+  // --- 搜尋過濾與分頁計算 (加入條碼搜尋) ---
+  const filteredItems = items.filter(item => 
+    item.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
+    item.store.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    (item.barcode && item.barcode.includes(searchQuery))
+  );
   const totalPages = Math.ceil(filteredItems.length / itemsPerPage) || 1;
   
   // 防止在刪除最後一頁的唯一一筆資料時出錯
-  // ⚠️ 確保所有 Hook 都放在任何提前 return (如 loading 檢查) 之前
   useEffect(() => {
     if (currentPage > totalPages && totalPages > 0) {
       setCurrentPage(totalPages);
@@ -387,10 +440,18 @@ export default function App() {
     try {
       const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'lowest_prices');
       const docRef = existingItem ? doc(db, 'artifacts', appId, 'public', 'data', 'lowest_prices', existingItem.id) : doc(colRef);
-      await setDoc(docRef, { name: name.trim(), price: numPrice, store: store.trim(), date: date, photo: photoBase64, timestamp: Date.now() });
+      await setDoc(docRef, { 
+        name: name.trim(), 
+        price: numPrice, 
+        store: store.trim(), 
+        date: date, 
+        photo: photoBase64, 
+        barcode: barcode.trim(), // 儲存條碼
+        timestamp: Date.now() 
+      });
       setSuccessMessage(`已成功記錄 ${name.trim()} 的最低價：$${numPrice}`);
       setTimeout(() => setSuccessMessage(''), 3000);
-      setName(''); setPrice(''); setStore(''); setPhotoBase64('');
+      setName(''); setPrice(''); setStore(''); setPhotoBase64(''); setBarcode(''); // 清空條碼
       if (fileInputRef.current) fileInputRef.current.value = '';
     } catch (error) { console.error("Error saving document: ", error); } finally { setIsSubmitting(false); }
   };
@@ -410,7 +471,7 @@ export default function App() {
         store: editingItem.store.trim(),
         date: editingItem.date,
         photo: editingItem.photo,
-        // 編輯時更新時間戳，使其跑到最上方
+        barcode: editingItem.barcode?.trim() || '', // 更新條碼
         timestamp: Date.now()
       });
       setSuccessMessage(`已成功更新 ${editingItem.name.trim()} 的記錄！`);
@@ -435,7 +496,6 @@ export default function App() {
   const startIndex = (currentPage - 1) * itemsPerPage;
   const paginatedItems = filteredItems.slice(startIndex, startIndex + itemsPerPage);
 
-  // ⚠️ 提前 return 的檢查必須放在所有 Hook 定義的下方
   if (loading) return <div className="flex items-center justify-center min-h-screen bg-gray-50"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-emerald-500"></div></div>;
 
   return (
@@ -488,6 +548,17 @@ export default function App() {
                 </h2>
               </div>
               <form onSubmit={handleSubmit} className="space-y-4">
+                 {/* 條碼輸入區塊 */}
+                 <div>
+                   <label className="block text-sm font-medium text-gray-600 mb-1">商品條碼 (可選)</label>
+                   <div className="flex gap-2">
+                     <input type="text" placeholder="掃描或手動輸入" value={barcode} onChange={(e) => setBarcode(e.target.value)} className="flex-1 px-4 py-2 border rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none" />
+                     <button type="button" onClick={() => { setScanTarget('form'); setIsScanning(true); }} className="px-3 bg-emerald-100 text-emerald-700 hover:bg-emerald-200 rounded-xl transition-colors flex items-center justify-center" title="使用相機掃描">
+                       <ScanLine className="w-5 h-5" />
+                     </button>
+                   </div>
+                 </div>
+
                  <div><label className="block text-sm font-medium text-gray-600 mb-1">日期</label><input type="date" required value={date} onChange={(e) => setDate(e.target.value)} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none" /></div>
                  <div><label className="block text-sm font-medium text-gray-600 mb-1">物品名稱</label><input type="text" required placeholder="例如：衛生紙 12入" value={name} onChange={(e) => setName(e.target.value)} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none" /></div>
                  <div><label className="block text-sm font-medium text-gray-600 mb-1">價格</label><input type="number" step="0.01" min="0" required placeholder="輸入價格" value={price} onChange={(e) => setPrice(e.target.value)} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none" /></div>
@@ -513,16 +584,21 @@ export default function App() {
           {!isAdmin && <div className="mb-6 bg-blue-50 text-blue-700 p-4 rounded-xl border border-blue-100"><p className="text-sm">目前為公開檢視模式，登入管理員以新增紀錄。</p></div>}
           
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-              <input type="text" placeholder="搜尋物品名稱或商店..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-10 pr-4 py-3 border rounded-xl shadow-sm focus:ring-2 focus:ring-emerald-500 outline-none" />
+            <div className="relative flex-1 flex gap-2">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                <input type="text" placeholder="搜尋名稱、商店或掃描條碼..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-10 pr-4 py-3 border rounded-xl shadow-sm focus:ring-2 focus:ring-emerald-500 outline-none" />
+              </div>
+              <button type="button" onClick={() => { setScanTarget('search'); setIsScanning(true); }} className="px-4 bg-white border border-gray-200 text-gray-600 hover:bg-gray-50 rounded-xl shadow-sm transition-colors flex items-center justify-center" title="掃描條碼搜尋">
+                <ScanLine className="w-5 h-5" />
+              </button>
             </div>
 
             {/* 全域編輯功能按鈕 (管理員可見) */}
             {isAdmin && (
               <button 
                 onClick={() => setIsGlobalEditMode(!isGlobalEditMode)} 
-                className={`flex items-center gap-2 px-4 py-3 rounded-xl shadow-sm font-medium transition-colors whitespace-nowrap border ${
+                className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl shadow-sm font-medium transition-colors whitespace-nowrap border ${
                   isGlobalEditMode 
                     ? 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100' 
                     : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
@@ -559,6 +635,12 @@ export default function App() {
                     <div className="text-2xl font-black text-emerald-600">${item.price.toFixed(2)}</div>
                     <div className="text-sm text-gray-600 truncate"><Store className="w-3 h-3 inline mr-1"/>{item.store}</div>
                     <div className="text-xs text-gray-400 mt-1 truncate"><Calendar className="w-3 h-3 inline mr-1"/>{item.date}</div>
+                    {/* 顯示條碼 */}
+                    {item.barcode && (
+                      <div className="text-xs text-gray-400 mt-1 flex items-center gap-1 truncate">
+                        <Barcode className="w-3 h-3" /> {item.barcode}
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -578,9 +660,9 @@ export default function App() {
                   onChange={(e) => setItemsPerPage(Number(e.target.value))}
                   className="border-gray-200 bg-gray-50 rounded-lg border px-3 py-1.5 outline-none focus:ring-2 focus:ring-emerald-500 transition-shadow"
                 >
-                  <option value={10}>10 筆</option>
-                  <option value={20}>20 筆</option>
-                  <option value={30}>30 筆</option>
+                  <option value={12}>12 筆</option>
+                  <option value={24}>24 筆</option>
+                  <option value={48}>48 筆</option>
                 </select>
               </div>
 
@@ -609,10 +691,27 @@ export default function App() {
         </div>
       </main>
 
+      {/* --- 掃描器 Modal --- */}
+      {isScanning && (
+        <div className="fixed inset-0 bg-black/80 z-[60] flex items-center justify-center p-4 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white rounded-2xl w-full max-w-md p-4 shadow-2xl">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-bold flex items-center gap-2">
+                <ScanLine className="w-5 h-5 text-emerald-600" /> 掃描商品條碼
+              </h3>
+              <button onClick={() => setIsScanning(false)} className="p-1 text-gray-400 hover:text-gray-600 bg-gray-100 rounded-full"><X className="w-5 h-5"/></button>
+            </div>
+            {/* html5-qrcode 渲染容器 */}
+            <div id="reader" className="w-full bg-black rounded-xl overflow-hidden border-2 border-dashed border-gray-300 min-h-[250px]"></div>
+            <p className="text-xs text-center text-gray-500 mt-4">請將商品條碼或 QR Code 對準畫面中央</p>
+          </div>
+        </div>
+      )}
+
       {/* --- 編輯現有記錄 Modal --- */}
       {editingItem && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl w-full max-w-md p-6 shadow-2xl animate-fade-in">
+          <div className="bg-white rounded-2xl w-full max-w-md p-6 shadow-2xl animate-fade-in max-h-[90vh] overflow-y-auto">
             <div className="flex justify-between items-center mb-4 border-b pb-3">
               <h3 className="text-xl font-bold text-blue-700 flex items-center gap-2">
                 <Edit3 className="w-5 h-5" /> 編輯記錄
@@ -621,6 +720,15 @@ export default function App() {
             </div>
             
             <form onSubmit={handleUpdateItem} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-600 mb-1">商品條碼 (可選)</label>
+                <div className="flex gap-2">
+                  <input type="text" value={editingItem.barcode || ''} onChange={(e) => setEditingItem({...editingItem, barcode: e.target.value})} className="flex-1 px-4 py-2 border rounded-xl focus:ring-2 focus:ring-blue-500 outline-none bg-blue-50/30" />
+                  <button type="button" onClick={() => { setScanTarget('edit'); setIsScanning(true); }} className="px-3 bg-blue-100 text-blue-700 hover:bg-blue-200 rounded-xl transition-colors">
+                    <ScanLine className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
               <div>
                 <label className="block text-sm font-medium text-gray-600 mb-1">日期</label>
                 <input type="date" required value={editingItem.date} onChange={(e) => setEditingItem({...editingItem, date: e.target.value})} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-blue-500 outline-none bg-blue-50/30" />
